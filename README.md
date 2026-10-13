@@ -1,231 +1,286 @@
-# VaultMesh — Multi-Tenant Data Protection Control Plane
+# VaultMesh
 
-[![Go Version](https://img.shields.io/badge/go-1.26+-00ADD8.svg?style=flat&logo=go)](https://golang.org)
-[![Kafka](https://img.shields.io/badge/kafka-3.8+-231F20.svg?style=flat&logo=apachekafka)](https://kafka.apache.org)
-[![PostgreSQL](https://img.shields.io/badge/postgres-16+-336791.svg?style=flat&logo=postgresql)](https://postgresql.org)
-[![Redis](https://img.shields.io/badge/redis-7.2+-DC382D.svg?style=flat&logo=redis)](https://redis.io)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+> A multi-tenant data-protection control plane for orchestrating backup policies, protection jobs, recovery workflows, and compliance-oriented audit events.
 
-**VaultMesh** is a distributed, multi-tenant SaaS control plane designed for enterprise data protection operations. It coordinates and orchestrates backup schedules, protection jobs, recovery policies, and audit trails across hundreds of isolated customer organizations with strict tenant boundary enforcement, resilient event-driven execution, and zero-loss audit guarantees.
+[![Go](https://img.shields.io/badge/Go-1.26.1-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+[![Kafka](https://img.shields.io/badge/Apache%20Kafka-KRaft-231F20?logo=apachekafka&logoColor=white)](https://kafka.apache.org/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![Redis](https://img.shields.io/badge/Redis-7.2-DC382D?logo=redis&logoColor=white)](https://redis.io/)
+[![Docker Compose](https://img.shields.io/badge/Docker%20Compose-supported-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
 
-Built to showcase core infrastructure, distributed systems, and reliability engineering principles tailored for modern cloud data management platforms (e.g., Rubrik, AWS Backup).
+## Why VaultMesh?
 
----
+VaultMesh models the **control-plane responsibilities of a modern data-protection platform**. It separates policy and job orchestration from the underlying storage/data plane, allowing protection operations to be scheduled, dispatched, retried, audited, and isolated across tenants.
 
-## 1. System Architecture
+The project is intentionally designed around the engineering concerns expected in enterprise backup and cyber-resilience systems, including:
+
+- Multi-tenant isolation and noisy-neighbor protection
+- Reliable asynchronous job orchestration
+- Idempotent event consumption and at-least-once delivery
+- Distributed locking and concurrency control
+- Retry policies and dead-letter queues
+- Role-based access control and tenant-scoped authorization
+- Immutable, compliance-oriented audit history
+- Containerized local development and repeatable validation
+
+## Rubrik-Relevant Engineering Signals
+
+This project demonstrates concepts directly relevant to enterprise data security and data-management platforms such as Rubrik:
+
+| Capability | VaultMesh implementation focus |
+| --- | --- |
+| **Policy-driven protection** | Tenant-scoped protection policies and scheduled/manual job triggers |
+| **Distributed orchestration** | Kafka-backed job dispatch with explicit lifecycle transitions |
+| **Resilience** | Idempotent consumers, bounded retries, jitter, and DLQ handling |
+| **Tenant isolation** | Tenant-bound request context, persistence, quotas, and authorization |
+| **Operational correctness** | Redis distributed locks and duplicate-delivery protection |
+| **Security** | JWT authentication, RBAC, and least-privilege role checks |
+| **Compliance** | Append-only audit events for policy and job state mutations |
+| **Production readiness** | Health checks, Docker Compose dependencies, and Makefile automation |
+
+## Architecture
 
 ```text
-                             Client Applications / CLI
-                                        │
-                                        ▼ (HTTPS / REST)
-                             ┌───────────────────────┐
-                             │      API Gateway      │
-                             │ (Rate Limiting, Auth) │
-                             └──────────┬────────────┘
-                                        │
-           ┌────────────────────────────┼────────────────────────────┐
-           ▼                            ▼                            ▼
-┌────────────────────┐       ┌────────────────────┐       ┌────────────────────┐
-│    Auth Service    │       │   Tenant Service   │       │   Policy Service   │
-│   (JWT & RBAC)     │       │(Orgs, Quotas, Keys)│       │ (Schedules, Rules) │
-└──────────┬─────────┘       └──────────┬─────────┘       └──────────┬─────────┘
-           │                            │                            │
-           └────────────────────────────┼────────────────────────────┘
-                                        │
-                                        ▼
-                             ┌───────────────────────┐
-                             │  Job Orchestrator API │
-                             │(State Machine, Locks) │
-                             └──────────┬────────────┘
-                                        │
-                                        ▼
-                             ┌───────────────────────┐
-                             │  Apache Kafka Cluster │
-                             │  (Event Mesh Bus)     │
-                             └──────┬─────────┬──────┘
-                                    │         │
-                jobs.triggered      │         │ audit.events
-                                    ▼         ▼
-                         ┌─────────────┐   ┌────────────────┐
-                         │ Job Workers │   │ Audit Consumer │
-                         │ (Idempotent,│   │  (Immutable    │
-                         │ Retries,DLQ)│   │  Audit Trail)  │
-                         └──────┬──────┘   └───────┬────────┘
-                                │                  │
-            ┌───────────────────┴──────────┐       │
-            ▼                              ▼       ▼
-    ┌───────────────┐              ┌────────────────┐
-    │     Redis     │              │   PostgreSQL   │
-    │(Locks & Cache)│              │(Tenant Storage)│
-    └───────────────┘              └────────────────┘
+                         Clients / CLI
+                              |
+                         HTTPS / REST
+                              v
+                    +--------------------+
+                    |     API Gateway    |
+                    | Auth, RBAC, Limits |
+                    +----------+---------+
+                               |
+          +--------------------+--------------------+
+          |                    |                    |
+          v                    v                    v
+   Auth Service        Tenant Service        Policy Service
+   JWT + RBAC          Quotas + Keys         Schedules + Rules
+          \                    |                    /
+           +-------------------+-------------------+
+                               v
+                    +--------------------+
+                    |  Job Orchestrator  |
+                    | State + Locks      |
+                    +----------+---------+
+                               |
+                               v
+                    +--------------------+
+                    | Apache Kafka / KRaft|
+                    | Event Mesh          |
+                    +-----+-----------+---+
+                          |           |
+                          v           v
+                   Job Workers   Audit Consumer
+                   Retry + DLQ   Immutable Trail
+                          |           |
+                          +-----+-----+
+                                |
+                 +--------------+--------------+
+                 |                             |
+                 v                             v
+          Redis: locks, cache,             PostgreSQL:
+          idempotency, quotas              tenants, policies, jobs, audit
 ```
 
----
+## Core Design Principles
 
-## 2. Core Engineering Capabilities
+### Multi-tenant isolation
 
-### 🛡️ Multi-Tenancy & Strong Isolation
-* **Context-Bound Tenant Resolution:** Every incoming request resolves a verified `TenantContext` containing `tenant_id`, org quotas, and role permissions.
-* **Tenant-Scoped Persistence:** All database queries, indices, and transactions are strictly tenant-keyed (`tenant_id`), preventing cross-tenant leakage.
-* **Per-Tenant Rate Limiting & Resource Quotas:** Redis token-bucket rate limiting prevents noisy-neighbor resource exhaustion.
+- Resolve every request into a verified tenant context.
+- Scope authorization, persistence, quotas, and operational limits by `tenant_id`.
+- Use Redis-backed rate limiting to reduce noisy-neighbor impact.
 
-### ⚡ Event-Driven Job Orchestration & Fault Tolerance
-* **Asynchronous Kafka Event Bus:** Jobs transition asynchronously across decoupled topics (`jobs.triggered`, `jobs.completed`, `jobs.failed`, `jobs.dlq`).
-* **Idempotent Consumers:** Deduplication keys via Redis & PostgreSQL ensure at-least-once Kafka delivery does not trigger duplicate backups.
-* **Distributed Locking:** Redis-based distributed mutexes (`Redlock` pattern) prevent race conditions when concurrent triggers hit the same protection policy.
-* **State Machine Integrity:** Enforces deterministic transitions: `PENDING` ➔ `QUEUED` ➔ `RUNNING` ➔ `COMPLETED` / `FAILED` / `RETRYING` ➔ `CANCELED`.
-* **Exponential Backoff & Dead Letter Queue (DLQ):** Transient failures trigger bounded retries with jitter; exhausted retries automatically route to `jobs.dlq` for operator investigation.
+### Reliable job orchestration
 
-### 🔐 Security, RBAC & Immutable Auditability
-* **Role-Based Access Control (RBAC):** Fine-grained permission matrix across `TenantAdmin`, `BackupOperator`, `Auditor`, and `Viewer`.
-* **Tamper-Evident Audit Trail:** Every action (policy edits, manual backup runs, recovery requests) emits an audit event consumed into append-only tables.
+Protection jobs follow an explicit lifecycle:
 
----
+```text
+PENDING -> QUEUED -> RUNNING -> COMPLETED
+                         |          |
+                         v          v
+                      RETRYING    FAILED
+                         |
+                         v
+                        DLQ
 
-## 3. VaultMesh vs. RestoreForge
+Any active job may be cancelled when policy and authorization permit it.
+```
 
-VaultMesh and [RestoreForge](https://github.com/vuday/RestoreForge) complement each other by addressing distinct layers of data protection infrastructure:
+The design emphasizes deterministic state transitions, idempotency keys, distributed locks, bounded retries, and operator-visible failure handling.
 
-| Dimension | **RestoreForge** | **VaultMesh** |
-| :--- | :--- | :--- |
-| **Primary Scope** | **Data Plane (Storage Engine)** | **Control Plane (Orchestration Engine)** |
-| **Core Challenge** | Content-addressed chunking, deduplication, MinIO storage & data integrity | Multi-tenant isolation, distributed state machines, Kafka event streaming |
-| **Storage Architecture** | Object Storage (MinIO) + Content Metadata (PostgreSQL) | PostgreSQL (Relational metadata) + Redis (Locks & token buckets) |
-| **Processing Paradigm** | Block/chunk-level pipeline with cryptographic verification | Event-driven microservices with at-least-once Kafka guarantees |
-| **Key Distributed Concept** | Chunk-level deduplication, data corruption recovery | Idempotency, DLQ handling, tenant noisy-neighbor mitigation, distributed locks |
+### Security and auditability
 
----
+- JWT-based authentication with tenant-scoped claims
+- RBAC roles such as `TenantAdmin`, `BackupOperator`, `Auditor`, and `Viewer`
+- Protected policy, job, tenant, and audit operations
+- Audit events for policy changes, manual runs, recovery requests, and state mutations
 
-## 4. Technology Stack
+## Technology Stack
 
-| Component | Technology | Purpose |
-| :--- | :--- | :--- |
-| **Language** | Go (1.26+) | High-concurrency control plane services and asynchronous consumers |
-| **Message Broker** | Apache Kafka (KRaft mode) | Reliable, decoupled event streaming for job dispatch, state transitions, and audits |
-| **Primary Database** | PostgreSQL 16+ | ACID relational store for tenants, policies, job states, and audit trails |
-| **In-Memory Store** | Redis 7.2+ | Distributed mutual exclusion locks, consumer idempotency keys, and tenant rate limiting |
-| **API Transport** | REST / JSON | HTTP APIs with structured JSON, standard error contracts, and middleware chains |
-| **Auth & Security** | JWT + RBAC | Tenant-scoped claims with role enforcement |
-| **Containerization** | Docker & Compose | Multi-container local orchestration for Kafka, Postgres, Redis, and services |
+| Layer | Technology | Purpose |
+| --- | --- | --- |
+| Services | Go 1.26.1 | Concurrent APIs, workers, and event consumers |
+| API | REST / JSON | Control-plane operations and health checks |
+| Eventing | Apache Kafka in KRaft mode | Decoupled job, progress, failure, and audit events |
+| Relational storage | PostgreSQL 16 | Tenant, policy, job, and audit metadata |
+| Coordination | Redis 7.2 | Locks, rate limits, cache, and idempotency records |
+| Local environment | Docker Compose | Reproducible infrastructure dependencies |
+| Developer workflow | Make | Build, test, run, and container lifecycle commands |
 
----
-
-## 5. Repository Structure
+## Repository Layout
 
 ```text
 .
 ├── cmd/
-│   ├── api/                    # REST API Gateway & Control Plane entrypoint
-│   │   └── main.go
-│   ├── worker/                 # Job execution worker (Kafka consumer + state updater)
-│   │   └── main.go
-│   └── audit/                  # Audit event consumer (Kafka consumer + DB writer)
-│       └── main.go
+│   ├── api/                  # REST API and control-plane entrypoint
+│   ├── worker/               # Protection-job consumer and executor
+│   └── audit/                # Audit-event consumer and persistence
 ├── internal/
-│   ├── api/                    # HTTP presentation layer
-│   │   ├── handlers/           # Route handlers (auth, tenant, policy, job, audit)
-│   │   ├── middleware/         # Auth, TenantContext, RateLimit, Logging
-│   │   └── router.go           # HTTP routing setup
-│   ├── auth/                   # RBAC engine, JWT generation & verification
-│   ├── tenant/                 # Tenant provisioning and quota services
-│   ├── policy/                 # Backup policy definitions and schedules
-│   ├── job/                    # State machine orchestrator & job management
-│   ├── worker/                 # Job execution logic, retry policy & DLQ handler
-│   ├── audit/                  # Audit logging service & querying
-│   └── config/                 # Environment and application configuration
+│   ├── api/                  # Handlers, middleware, and routing
+│   ├── auth/                 # JWT and RBAC logic
+│   ├── tenant/               # Tenant provisioning and quotas
+│   ├── policy/               # Protection policies and schedules
+│   ├── job/                  # Job state machine and orchestration
+│   ├── worker/               # Retry, DLQ, and execution logic
+│   ├── audit/                # Audit recording and query logic
+│   └── config/               # Application configuration
 ├── pkg/
-│   ├── database/               # PostgreSQL connection pool & tenant query helpers
-│   ├── kafka/                  # Kafka producer, consumer group wrapper, DLQ helper
-│   ├── redis/                  # Redis client, distributed lock & idempotency store
-│   └── models/                 # Shared domain models & event schemas
-├── migrations/                 # PostgreSQL schema migrations (Up/Down)
-│   ├── 000001_init_schema.up.sql
-│   └── 000001_init_schema.down.sql
+│   ├── database/             # PostgreSQL access and tenant helpers
+│   ├── kafka/                # Producers, consumers, and DLQ helpers
+│   ├── redis/                # Locks, cache, and idempotency helpers
+│   └── models/               # Shared domain models and event schemas
 ├── deployments/
-│   ├── docker-compose.yml      # Kafka (KRaft), PostgreSQL, Redis, API, Worker, Audit
-│   └── Dockerfile
-├── scripts/
-│   └── seed.sql                # Seed data for local validation
-├── Makefile                    # Developer workflow targets (build, test, run, docker)
-├── go.mod                      # Go module definition
-└── README.md                   # System documentation
+│   ├── docker-compose.yml    # PostgreSQL, Redis, and Kafka
+│   └── Dockerfile            # Multi-stage service image
+├── migrations/               # Database schema migrations
+├── scripts/                  # Seed data and local validation helpers
+├── docs/                     # Additional design documentation
+├── Makefile                  # Standard developer commands
+├── go.mod                    # Go module definition
+└── README.md                 # Project documentation
 ```
 
----
-
-## 6. Getting Started
+## Quick Start
 
 ### Prerequisites
-* **Go**: `1.24+` (or `1.26+`)
-* **Docker & Docker Compose**: v2.20+
-* **Make**: (Optional, for Makefile shortcuts)
 
-### 1. Start Infrastructure Dependencies
-Launch Kafka (KRaft mode), PostgreSQL, and Redis:
-```bash
-docker compose -f deployments/docker-compose.yml up -d postgres redis kafka
-```
+- Go 1.26.1 or later
+- Docker Engine and Docker Compose v2
+- GNU Make (recommended)
 
-### 2. Run Database Migrations
-Apply the initial schema:
-```bash
-# Using migrate tool or psql
-docker exec -i vaultmesh-postgres psql -U vaultmesh -d vaultmesh < migrations/000001_init_schema.up.sql
-docker exec -i vaultmesh-postgres psql -U vaultmesh -d vaultmesh < scripts/seed.sql
-```
-
-### 3. Run Services Locally
-Open separate terminal tabs or run via Go:
+### 1. Start the local infrastructure
 
 ```bash
-# Terminal 1: API Server
-go run cmd/api/main.go
-
-# Terminal 2: Job Worker Consumer
-go run cmd/worker/main.go
-
-# Terminal 3: Audit Event Consumer
-go run cmd/audit/main.go
+git clone https://github.com/uday68/ValutMesh.git
+cd ValutMesh
+make docker-up
 ```
 
-Or run everything inside Docker:
+This starts PostgreSQL, Redis, and Kafka using `deployments/docker-compose.yml`. PostgreSQL initializes the schema and seed data from `migrations/` and `scripts/`.
+
+### 2. Build and test
+
 ```bash
-docker compose -f deployments/docker-compose.yml up --build
+make build
+make test
 ```
 
----
+The test target runs the Go test suite with verbose output and the race detector:
 
-## 7. API Specification Overview
+```bash
+go test -v -race ./...
+```
 
-| Method | Endpoint | Description | Auth Required |
-| :--- | :--- | :--- | :--- |
-| `POST` | `/api/v1/auth/login` | Authenticate user & issue tenant-scoped JWT | No |
-| `GET` | `/api/v1/tenants/me` | Fetch authenticated tenant details & quotas | `Viewer+` |
-| `POST` | `/api/v1/policies` | Create new data protection policy | `TenantAdmin` |
-| `GET` | `/api/v1/policies` | List all protection policies for tenant | `Viewer+` |
-| `POST` | `/api/v1/jobs/trigger` | Manually dispatch a data protection job | `BackupOperator` |
-| `GET` | `/api/v1/jobs/:id` | Get job lifecycle status & execution metadata | `Viewer+` |
-| `GET` | `/api/v1/audit/logs` | Query tenant audit events | `Auditor+` |
-| `GET` | `/healthz` | System health check (PostgreSQL, Kafka, Redis) | No |
+### 3. Run services locally
 
----
+Use separate terminals for the API, worker, and audit consumer:
 
-## 8. Event Topics & Lifecycle
+```bash
+make run-api
+make run-worker
+make run-audit
+```
 
-| Topic Name | Producer | Consumer | Description |
-| :--- | :--- | :--- | :--- |
-| `vaultmesh.jobs.triggered` | API Gateway | Job Workers | Emitted when a scheduled or manual job is queued |
-| `vaultmesh.jobs.progress` | Job Workers | API / WebSocket | Real-time progress updates & chunk checkpointing |
-| `vaultmesh.jobs.completed` | Job Workers | API / Audit | Emitted upon successful job termination |
-| `vaultmesh.jobs.failed` | Job Workers | Job Workers | Emitted on transient failure for retry evaluation |
-| `vaultmesh.jobs.dlq` | Job Workers | DLQ Monitor | Dead-letter queue for exhausted retries |
-| `vaultmesh.audit.events` | All Services | Audit Consumer | Stream of all state mutations for compliance storage |
+Or build/run a service image with the Dockerfile's `SERVICE` argument:
 
----
+```bash
+docker build -f deployments/Dockerfile --build-arg SERVICE=api -t vaultmesh-api .
+docker run --rm -p 8080:8080 vaultmesh-api
+```
 
-## 9. License
+### 4. Stop the environment
 
-This project is licensed under the [MIT License](LICENSE).
+```bash
+make docker-down
+```
 
-#   V a l u t M e s h  
- 
+## Makefile Commands
+
+| Command | Description |
+| --- | --- |
+| `make build` | Build API, worker, and audit binaries into `bin/` |
+| `make test` | Run tests with verbose output and the race detector |
+| `make clean` | Remove generated binaries |
+| `make run-api` | Run the API service |
+| `make run-worker` | Run the job worker |
+| `make run-audit` | Run the audit consumer |
+| `make docker-up` | Start local infrastructure in the background |
+| `make docker-down` | Stop and remove local containers |
+
+## API Surface
+
+| Method | Endpoint | Purpose | Access |
+| --- | --- | --- | --- |
+| `POST` | `/api/v1/auth/login` | Authenticate and issue a tenant-scoped JWT | Public |
+| `GET` | `/api/v1/tenants/me` | Read tenant identity and quotas | Viewer+ |
+| `POST` | `/api/v1/policies` | Create a protection policy | TenantAdmin |
+| `GET` | `/api/v1/policies` | List tenant policies | Viewer+ |
+| `POST` | `/api/v1/jobs/trigger` | Trigger a protection job | BackupOperator |
+| `GET` | `/api/v1/jobs/:id` | Inspect job state and metadata | Viewer+ |
+| `GET` | `/api/v1/audit/logs` | Query audit events | Auditor+ |
+| `GET` | `/healthz` | Check service and dependency health | Public |
+
+## Event Model
+
+| Topic | Producer | Consumer | Purpose |
+| --- | --- | --- | --- |
+| `vaultmesh.jobs.triggered` | API | Workers | Dispatch scheduled or manual jobs |
+| `vaultmesh.jobs.progress` | Workers | API / clients | Publish execution progress |
+| `vaultmesh.jobs.completed` | Workers | API / audit | Record successful completion |
+| `vaultmesh.jobs.failed` | Workers | Workers | Evaluate retry eligibility |
+| `vaultmesh.jobs.dlq` | Workers | Operations | Surface exhausted failures |
+| `vaultmesh.audit.events` | Services | Audit consumer | Persist security and compliance events |
+
+## Evaluation Checklist
+
+A reviewer can validate the project with the following workflow:
+
+```bash
+make docker-up
+make build
+make test
+make docker-down
+```
+
+Key areas to evaluate:
+
+- Tenant context is enforced at API and persistence boundaries.
+- Job transitions are deterministic and invalid transitions are rejected.
+- Duplicate Kafka deliveries do not create duplicate work.
+- Concurrent triggers for the same policy are protected by distributed locking.
+- Retryable failures use bounded backoff and eventually reach the DLQ.
+- Authorization is role-aware and tenant-scoped.
+- Audit events capture meaningful state changes without becoming mutable business records.
+- Health checks expose dependency failures clearly.
+
+## Project Positioning
+
+VaultMesh is the **control plane** for protection operations. A complementary data-plane implementation would handle content chunking, deduplication, object storage, encryption, integrity verification, and restore streams. Keeping these responsibilities separate makes the system easier to scale, test, secure, and operate.
+
+## Status
+
+This repository is an engineering portfolio project and architecture-focused reference implementation. Interfaces and service behavior may evolve as additional production-grade features are added.
+
+## License
+
+No license file is currently included in the repository. Add a `LICENSE` file before distributing VaultMesh for external use.
